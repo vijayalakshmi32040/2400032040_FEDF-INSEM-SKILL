@@ -1,15 +1,269 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>React Greeting App</title>
-  </head>
-  <body>
-    <!-- React mounts the app here -->
-    <div id="root"></div>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Student Dashboard</title>
+    <!-- Load Tailwind CSS from CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Optional: Use Inter font as per best practice */
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div class="min-h-screen p-6 sm:p-12 font-sans">
+        <div class="max-w-2xl mx-auto">
 
-    <!-- Vite injects the React build here -->
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+            <header class="text-center mb-12">
+                <h1 class="text-5xl font-extrabold text-gray-900 border-b-4 border-indigo-400 pb-3 inline-block">
+                    Student Dashboard
+                </h1>
+                <p class="text-gray-600 mt-4 text-lg">
+                    Add a student to see their personalized greeting!
+                </p>
+            </header>
+
+            <!-- --- Input and Button Section --- -->
+            <div class="flex flex-col sm:flex-row gap-4 mb-12 p-6 bg-white rounded-xl shadow-md border border-gray-100">
+                <input
+                    type="text"
+                    id="new-name-input"
+                    placeholder="Enter new student name..."
+                    class="flex-grow p-3 border-2 border-indigo-200 rounded-lg focus:outline-none focus:border-indigo-500 transition duration-150 text-lg"
+                />
+                <button
+                    id="add-student-btn"
+                    class="bg-indigo-600 text-white font-bold py-3 px-6 rounded-lg shadow-lg hover:bg-indigo-700 transition duration-200 ease-in-out transform hover:scale-[1.02] active:scale-[0.98] focus:outline-none focus:ring-4 focus:ring-indigo-300"
+                >
+                    Add Student
+                </button>
+            </div>
+
+            <!-- --- Personalized Greetings Section --- -->
+            <section class="space-y-6">
+                <h2 class="text-2xl font-semibold text-gray-700 mb-4">
+                    Total Greetings Displayed: <span id="student-count" class="text-indigo-600 font-extrabold">4</span>
+                </h2>
+
+                <div id="greetings-container">
+                    <!-- Dynamic Welcome components will be rendered here by JavaScript -->
+                </div>
+
+                <!-- Message if no students are present -->
+                <p id="empty-message" class="text-center text-gray-500 italic p-10 bg-white rounded-xl shadow-inner hidden">
+                    No students added yet. Use the input above to get started!
+                </p>
+            </section>
+        </div>
+    </div>
+
+    <script>
+        // === GEMINI API CONFIGURATION ===
+        const API_MODEL = 'gemini-2.5-flash-preview-09-2025';
+        // Note: The __api_key variable is provided automatically by the environment.
+        const API_KEY = typeof __api_key !== 'undefined' ? __api_key : "";
+        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${API_MODEL}:generateContent?key=${API_KEY}`;
+        
+        // === VANILLA JAVASCRIPT LOGIC ===
+
+        // 1. Initial State (students array)
+        let students = [
+            "Deepak",
+            "Sarah Johnson",
+            "Alex Chen",
+            "Jamie Lee"
+        ];
+
+        // 2. DOM Element References
+        const container = document.getElementById('greetings-container');
+        const countDisplay = document.getElementById('student-count');
+        const inputField = document.getElementById('new-name-input');
+        const addButton = document.getElementById('add-student-btn');
+        const emptyMessage = document.getElementById('empty-message');
+        
+        // --- API Helper Function (Handles exponential backoff for robustness) ---
+        async function fetchWrapper(url, options, retries = 3, delay = 1000) {
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (response.status === 429 && i < retries - 1) {
+                        await new Promise(resolve => setTimeout(resolve, delay * (2 ** i) + Math.random() * 1000));
+                        continue;
+                    }
+                    if (!response.ok) {
+                        const errorBody = await response.text();
+                        throw new Error(`API call failed with status ${response.status}: ${errorBody}`);
+                    }
+                    return response;
+                } catch (error) {
+                    if (i === retries - 1) throw error;
+                    // Log error to console, but do not log retries as specified in instructions
+                }
+            }
+        }
+
+        /**
+         * Calls the Gemini API to generate a student bio.
+         * @param {string} studentName - The name to generate a bio for.
+         * @returns {Promise<string>} The generated text bio.
+         */
+        async function geminiGenerateBio(studentName) {
+            const systemPrompt = "You are an AI assistant in a student dashboard. Your task is to write a short, encouraging, and inspirational one-paragraph bio for the student. Do not use markdown formatting. Keep it to a maximum of 50 words.";
+            
+            const userQuery = `Write a bio for a student named ${studentName}.`;
+            
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+
+            const options = {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            };
+
+            try {
+                const response = await fetchWrapper(API_URL, options);
+                const result = await response.json();
+                
+                const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (!text) {
+                     // Throw a clear error if the API response is malformed
+                    throw new Error("Invalid or empty response from the AI model.");
+                }
+                return text;
+
+            } catch (error) {
+                console.error("Gemini API Error:", error);
+                throw new Error("Failed to generate bio.");
+            }
+        }
+
+        /**
+         * Handles the click event for the Generate Bio button.
+         * @param {string} studentName - The name of the student.
+         */
+        async function handleGenerateBio(studentName) {
+            const safeName = studentName.replace(/\s+/g, '-');
+            const bioContainer = document.getElementById(`bio-result-${safeName}`);
+            const bioTextElement = document.getElementById(`bio-text-${safeName}`);
+            const errorElement = document.getElementById(`bio-error-${safeName}`);
+            const button = document.querySelector(`.generate-bio-btn[data-student-name="${studentName}"]`);
+            
+            // Initial state: Show loading, hide error/previous content
+            if (bioContainer) bioContainer.classList.remove('hidden');
+            if (errorElement) errorElement.classList.add('hidden');
+            if (bioTextElement) bioTextElement.innerHTML = '<span class="animate-pulse text-purple-500">Generating inspiring bio...</span>';
+            if (button) button.disabled = true;
+
+            try {
+                const bio = await geminiGenerateBio(studentName);
+                if (bioTextElement) bioTextElement.textContent = bio;
+            } catch (error) {
+                if (bioTextElement) bioTextElement.textContent = '';
+                if (errorElement) errorElement.classList.remove('hidden');
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
+
+        /**
+         * Renders the HTML structure for a single Welcome component, including the Gemini button.
+         * @param {string} name - The name of the student.
+         * @returns {string} HTML string for the component.
+         */
+        function createWelcomeComponent(name) {
+            const safeName = name.replace(/\s+/g, '-');
+            return `
+                <div class="p-5 bg-white rounded-xl shadow-lg mb-4 text-center border border-indigo-200 transition duration-300 hover:shadow-xl hover:scale-[1.01] hover:border-indigo-400 flex flex-col items-center">
+                    <h2 class="text-3xl font-bold text-gray-800 tracking-tight">
+                        Welcome, <span class="text-indigo-600">${name}</span>!
+                    </h2>
+                    <p class="text-md text-gray-500 mt-1 italic mb-4">
+                        We're glad to see you on your student dashboard.
+                    </p>
+                    
+                    <button 
+                        class="generate-bio-btn bg-purple-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-purple-700 transition duration-200" 
+                        data-student-name="${name}"
+                    >
+                        Generate Bio
+                    </button>
+
+                    <!-- Container for LLM-generated content -->
+                    <div id="bio-result-${safeName}" class="mt-4 w-full text-left p-3 bg-purple-50 border border-purple-200 rounded-lg text-sm text-gray-700 hidden">
+                        <p class="font-bold text-purple-800 mb-1">AI-Generated Bio:</p>
+                        <div id="bio-text-${safeName}"></div>
+                        <p id="bio-error-${safeName}" class="text-red-500 italic hidden">Could not generate bio. Please try again.</p>
+                    </div>
+                </div>
+            `;
+        }
+
+
+        /**
+         * Renders the entire list of students and updates the UI.
+         */
+        function renderStudents() {
+            // 1. Update the student count display
+            countDisplay.textContent = students.length;
+
+            // 2. Clear the container before re-rendering
+            container.innerHTML = '';
+            
+            // 3. Check for empty state and show/hide message
+            if (students.length === 0) {
+                emptyMessage.classList.remove('hidden');
+            } else {
+                emptyMessage.classList.add('hidden');
+                
+                // 4. Iterate over the students array and render each component
+                let allHTML = '';
+                students.forEach(name => {
+                   allHTML += createWelcomeComponent(name);
+                });
+                container.innerHTML = allHTML; // Inject all components at once
+            }
+            
+            // 5. Re-attach event listeners for the dynamically created buttons (Event Delegation)
+            document.querySelectorAll('.generate-bio-btn').forEach(button => {
+                const name = button.getAttribute('data-student-name');
+                button.addEventListener('click', () => handleGenerateBio(name));
+            });
+        }
+
+        /**
+         * Handles the logic for adding a new student.
+         */
+        function handleAddStudent() {
+            const newName = inputField.value.trim();
+
+            if (newName) {
+                // 1. Update the state (students array)
+                students = [...students, newName];
+
+                // 2. Re-render the UI to reflect the new state
+                renderStudents();
+
+                // 3. Clear the input field
+                inputField.value = '';
+            }
+        }
+
+        // 4. Attach Event Listeners for the static elements
+        addButton.addEventListener('click', handleAddStudent);
+        
+        // Allows pressing Enter key in the input field to trigger the addition
+        inputField.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                handleAddStudent();
+            }
+        });
+
+        // 5. Initial Render on page load
+        document.addEventListener('DOMContentLoaded', renderStudents);
+    </script>
+</body>
 </html>
